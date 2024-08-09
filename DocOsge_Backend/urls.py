@@ -28,9 +28,11 @@ router.register(r'groups', views.GroupViewSet)
 router.register(r'register',views.RegisterUserViewSet, basename='register')
 router.register(r'login', views.UserLoginViewSet, basename='login')
 router.register(r'passwordreset',views.PasswordResetRequestViewSet, basename='passwordreset')
-router.register(r'search-doctor', views.DoctorSearchViewSet, basename='search-doctor')
-router.register(r'appointment', views.BookAppointmentViewSet, basename='appointment')
+router.register(r'doctorsearch', views.DoctorSearchViewSet, basename='doctorsearch')
 router.register(r'updateuserinfo',views.UserInfoUpdateViewSet, basename='updateuserinfo')
+router.register(r'logout',views.LogoutUserView,basename='logoutuser')
+router.register(r'doctorinfo',views.DoctorInfoView,basename="doctorinfo")
+router.register(r'appointment', views.AppointmentViewSet, basename='appointment')
 # Wire up our API using automatic URL routing.
 # Additionally, we include login URLs for the browsable API.
 urlpatterns = [

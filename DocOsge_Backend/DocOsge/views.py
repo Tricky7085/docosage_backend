@@ -1,25 +1,26 @@
 from django.contrib.auth.models import Group, User
-from .models import LoginUsers, UserAccountTypes, Users, UserInformation, Appointment, Attachment
-from rest_framework import permissions, viewsets
+from .models import LoginUsers, UserAccountTypes, Users, UserInformation, AccountTypes, DoctorInformation, Appointment
+# Appointment, Attachment
+from rest_framework import permissions, viewsets, filters
+# from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import status
 from rest_framework.response import Response
 from DocOsge_Backend.DocOsge.serializers import (
     GroupSerializer, UserSerializer,
-    UsersSerializer,AccountTypesSerializer, UserSignInSerializer, PasswordResetSerializer, UserInformationSerializer,
-    DoctorSearchSerializer, AppointmentSerializer)
+    UsersSerializer,AccountTypesSerializer, UserSignInSerializer, PasswordResetSerializer, UserInformationSerializer, CookieTokenRefreshSerializer, DoctorInformationSerializer, AppointmentSerializer)
+
 from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
 from django.conf import settings
+from datetime import timedelta
+from django.db.models import Q
+from rest_framework_simplejwt.exceptions import InvalidToken
+# from django.contrib.auth.models import AnonymousUser
 from .middlewares import CustomJWTAuthentication
 from rest_framework_simplejwt.views import TokenRefreshView
 from django.contrib.auth.hashers import make_password, check_password
 from django.utils.dateparse import parse_datetime
 # from rest_framework.authtoken.models import Token
 # from rest_framework.permissions import IsAuthenticated
-from rest_framework.filters import SearchFilter
-# from django.utils.http import urlsafe_base64_encode
-# from django.utils.encoding import force_bytes
-# from django.contrib.auth.tokens import default_token_generator
-# from django.utils import timezone
 
 class UserViewSet(viewsets.ModelViewSet):
     """
@@ -89,6 +90,8 @@ class RegisterUserViewSet(viewsets.ViewSet):
                 httponly=True,
                 secure=False,
                 samesite='Lax',
+                domain='127.0.0.1',
+                path='/',
                 expires=settings.SIMPLE_JWT['REFRESH_TOKEN_LIFETIME']
             )
             return response
@@ -147,7 +150,9 @@ class PasswordResetRequestViewSet(viewsets.ViewSet):
                     
                     refresh = RefreshToken.for_user(user)
                     token = refresh.access_token
+                    token.set_exp(lifetime=timedelta(minutes=5))
                     token["email"] = user.email
+                    
                     
                     return Response({"url":f'{settings.FRONTEND_URL}/passwordreset/?email={user.email}&user={token}'},status=status.HTTP_200_OK)
                     
@@ -220,174 +225,112 @@ class UserInfoUpdateViewSet(viewsets.ViewSet):
             
 
 class CustomTokenRefreshView(TokenRefreshView):
+    
+    serializer_class = CookieTokenRefreshSerializer
         
     def post(self,request,*args, **kwargs):
         
-        # print(request.COOKIES.get('refresh'))
+        serializer = self.get_serializer(data=request.data,context={'request':request})
         
-        # refresh_token = request.COOKIES.get('refresh_token')
+        try:
+            serializer.is_valid(raise_exception=True)
+        except InvalidToken as e:
+            return Response({"detail":str(e)},status=status.HTTP_401_UNAUTHORIZED)
         
-        # if refresh_token is None:
-        #     return Response({"error": "No refresh token found in cookies"}, status=status.HTTP_400_BAD_REQUEST)
-        # cookie = request.COOKIES.get('refresh_token')
+        return Response(serializer.validated_data, status=status.HTTP_200_OK)
+
+class LogoutUserView(viewsets.ViewSet):
+    
+    def create(self,request):
         
-        response = super().post(request, *args, **kwargs)
-        
-        
-        data = response.data
-        
-        # refresh_token = data.get("refresh")
-        
-        
-        return Response(data,status=status.HTTP_200_OK)
+        response = Response({"message":"User logout successfull"}, status=status.HTTP_200_OK)
+        response.delete_cookie(
+            key="refresh",
+        )
+        return response
 
 
+class DoctorInfoView(viewsets.ViewSet):
+    
+    def create(self, request):
+        user_id = request.data.get("user")
 
-class DoctorSearchViewSet(viewsets.ViewSet):
-    serializer_class = DoctorSearchSerializer
-    # permission_classes = [permissions.IsAuthenticated]
+        if not user_id:
+            return Response({"message": "User ID is required"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            user = Users.objects.get(pk=user_id)
+        except Users.DoesNotExist:
+            return Response({"message": "User does not exist"}, status=status.HTTP_404_NOT_FOUND)
+        
+        account_type = UserAccountTypes.objects.filter(user=user).first()
+        if not account_type or account_type.account_type.account_type != 'doctor':
+            return Response({"message": "User is not a doctor"}, status=status.HTTP_400_BAD_REQUEST)
 
-    def list(self, request):
-        search_query = request.query_params.get('search', None)
+        doctorInfoSerializer = DoctorInformationSerializer(data=request.data)
 
-        if search_query:
-            queryset = Users.objects.filter(
-                useraccounttypes__account_type__account_type='doctor',
-                name__icontains=search_query
-            )
-
-            if queryset.exists():
-                serializer = DoctorSearchSerializer(queryset, many=True)
-                return Response(serializer.data, status=status.HTTP_200_OK)
-            else:
-                return Response({"message": "No doctors found with this name"}, status=status.HTTP_400_BAD_REQUEST)
-            
+        if doctorInfoSerializer.is_valid():
+            doctorInfoSerializer.save()
+            return Response({'message': "Doctor info created"}, status=status.HTTP_201_CREATED)
         else:
-            return Response({"message": "Search query parameter is required"}, status=status.HTTP_400_BAD_REQUEST)    
+            return Response(doctorInfoSerializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class DoctorSearchViewSet(viewsets.ModelViewSet):
+    queryset = DoctorInformation.objects.all()
+    serializer_class = DoctorInformationSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        params = self.request.query_params
+        
+        name = params.get('name', None)
+        practice_type = params.get('practiceType', None)
+
+        query = Q()
+
+        if name:
+            query &= Q(user__name__icontains=name)
+        
+        if practice_type:
+            query &= Q(practiceType__icontains=practice_type)
+
+        queryset = queryset.filter(query)
+
+        print(f"Filtered Queryset: {queryset.query}")
+
+        return queryset
 
 
-class BookAppointmentViewSet(viewsets.ViewSet):
-    # permission_classes = [IsAuthenticated]
+class AppointmentViewSet(viewsets.ViewSet):
+    authentication_classes = [CustomJWTAuthentication]
 
     def create(self, request):
+        user = request.user
+        data = request.data
 
-        data = {
-            'doctor_name' : request.data.get('doctor_name'),
-            'appointment_date' : request.data.get('appointment_date'),
-            'appointment_time' : request.data.get('appointment_time'),
-            'title' : request.data.get('title'),
-            'description' : request.data.get('description'),
-            'user' : request.user.id
-       
-        }
-
-        serializer = AppointmentSerializer(data=data)
-
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        doctor_name = data.get('doctor_name')
+        doctor_id = data.get('doctor')
         appointment_date = data.get('appointment_date')
         appointment_time = data.get('appointment_time')
         title = data.get('title')
         description = data.get('description')
 
-
-        try:
-            doctor = Users.objects.get(name=doctor_name, useraccounttypes__account_type__account_type='doctor')
-        except Users.DoesNotExist:
-            return Response({'error': 'Doctor not found'}, status=status.HTTP_400_BAD_REQUEST)
+        if not doctor_id or not appointment_date or not appointment_time or not title:
+            return Response({"error": "Missing required fields"}, status=status.HTTP_400_BAD_REQUEST)
         
         try:
-            appointment_date = parse_datetime(appointment_date)
-            appointment_time = parse_datetime(appointment_time)
-            if not appointment_date or not appointment_time:
-                return Response({"error": "Invalid date or time format"}, status=status.HTTP_400_BAD_REQUEST)
-        except ValueError:
-            return Response({"error": "Invalid date or time format"}, status=status.HTTP_400_BAD_REQUEST)
+            doctor = DoctorInformation.objects.get(pk=doctor_id)
+        except DoctorInformation.DoesNotExist:
+            return Response({"error": "Doctor does not exist"}, status=status.HTTP_404_NOT_FOUND)
 
-        
         appointment = Appointment(
+            user=user,
             doctor=doctor,
             appointment_date=appointment_date,
             appointment_time=appointment_time,
             title=title,
-            description=description,
-            user=request.user
+            description=description
         )
         appointment.save()
 
-        
-        attachments = request.FILES.getlist('attachments')
-        for file in attachments:
-            if file.size > 5 * 1024 * 1024:
-                return Response({"error": "File size exceeds the limit"}, status=status.HTTP_400_BAD_REQUEST)
-            if file.content_type not in ['application/pdf', 'image/jpeg', 'image/png', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']:
-                return Response({"error": "Unsupported file type"}, status=status.HTTP_400_BAD_REQUEST)
-            Attachment.objects.create(appointment=appointment, file=file)
-
-        # Optionally send a confirmation email (commented out for now)
-        # send_mail(
-        #     'Appointment Confirmation',
-        #     f'Your appointment with Dr. {doctor_name} has been successfully booked for {appointment_date} at {appointment_time}.',
-        #     settings.DEFAULT_FROM_EMAIL,
-        #     [request.user.email, doctor.email],
-        #     fail_silently=False,
-        # )
-
-        return Response({"message": "Appointment booked successfully"}, status=status.HTTP_201_CREATED)
-
-
-
-
-
-
-
-
-
-
-        # try:
-        #     doctor_name = request.data.get('doctor_name')
-        #     appointment_date = request.data.get('appointment_date')
-        #     appointment_time = request.data.get('appointment_time')
-        #     title = request.data.get('title')
-        #     description = request.data.get('description')
-        #     attachments = request.data.get('attachments')
-
-        #     if not all([doctor_name, appointment_date, appointment_time, title, description, attachments]):
-        #         return Response({'message': 'Missing required filed'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        #     try:
-        #         doctor = Users.objects.get(name=doctor_name, useraccounttypes__account_type__account_type='doctor')
-        #     except Users.DoesNotExist:
-        #         return Response({'error': 'Doctor not found'}, status=status.HTTP_400_BAD_REQUEST)
-
-        #     try:
-        #         appointment_date = parse_date(appointment_date, '%Y-%m-%dT%H:%M:%SZ')
-        #         appointment_time = parse_date(appointment_time, '%Y-%m-%dT%H:%M:%SZ')
-        #     except ValueError:
-        #         return Response({'error': 'Invalid date or time format'}, status=status.HTTP_400_BAD_REQUEST)
-
-
-        #     appointment = Appointment(
-        #         doctor=doctor,
-        #         appointment_date=appointment_date,
-        #         appointment_time=appointment_time,
-        #         title=title,
-        #         description=description,
-        #         attachments=attachments
-        #     )
-        #     appointment.save()
-
-        #     for file in attachments:
-        #         if file.size > 5 * 1024 * 1024:
-        #             return Response({'error': 'file size exceeds the limit'}, status=status.HTTP_400_BAD_REQUEST)
-        #         if file.content_type not in ['application/pdf', 'image/png', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']:
-        #             return Response({'error': 'Unsupported file type'}, status=status.HTTP_400_BAD_REQUEST)
-        #         Attachment.objects.create(appointment=appointment, file=file)
-
-
-
-        #     return Response({'message': 'Appointment booked successfully'}, status=status.HTTP_201_CREATED)
-        # except:
-        #     return Response({'message': "Internal server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        serializer = AppointmentSerializer(appointment)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
